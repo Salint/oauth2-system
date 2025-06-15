@@ -159,6 +159,36 @@ Resources:
       LogGroupName: !Sub /aws/lambda/${TokenLambda}
       RetentionInDays: 1
 
+  ValidateLambda:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+    Properties:
+      Description: !Sub ${AWS::StackName}-${Environment}-ValidateLambda
+      CodeUri: .
+      Handler: src/validate/index.handler
+      MemorySize: 128
+      Environment:
+        Variables:
+          JWT_SECRET_NAME: !Ref JWTSECRET
+      Policies:
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref JWTSECRET
+      Events:
+        OAuth2APIPOSToauth2validate:
+          Type: Api
+          Properties:
+            Path: /oauth2/validate
+            Method: POST
+            RestApiId: !Ref OAuth2API
+
+  ValidateLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ValidateLambda}
+      RetentionInDays: 1
+
   JWTSECRET:
     Type: AWS::SSM::Parameter
     Properties:
@@ -186,6 +216,13 @@ Resources:
                 httpMethod: POST
                 type: aws_proxy
                 uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TokenLambda.Arn}/invocations
+              responses: {}
+          /oauth2/validate:
+            post:
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ValidateLambda.Arn}/invocations
               responses: {}
       EndpointConfiguration: REGIONAL
       TracingEnabled: false
