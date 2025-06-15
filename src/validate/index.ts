@@ -6,12 +6,19 @@ const ssmClient = new SSMClient();
 
 const JWT_SECRET_NAME = process.env.JWT_SECRET_NAME || '';
 
-export class TokenFunction implements LambdaInterface {
+export class ValidateFunction implements LambdaInterface {
 	
 	async handler(event: any): Promise<any> {
 
 		const body = JSON.parse(event.body) || {};
 		const { token } = body;
+
+		if(!token) {
+			return {
+				statusCode: 400,
+				body: JSON.stringify({ error: 'Missing required data' })
+			}
+		}
 
 		const jwtSecretCommand = new GetParameterCommand({
 			Name: JWT_SECRET_NAME,
@@ -39,4 +46,4 @@ export class TokenFunction implements LambdaInterface {
 
 }
 
-export const handler = new TokenFunction().handler.bind(new TokenFunction());
+export const handler = new ValidateFunction().handler.bind(new ValidateFunction());

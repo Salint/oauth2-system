@@ -40,10 +40,19 @@ Resources:
       AttributeDefinitions:
         - AttributeName: user_id
           AttributeType: S
+        - AttributeName: email
+          AttributeType: S
       BillingMode: PAY_PER_REQUEST
       KeySchema:
         - AttributeName: user_id
           KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: email-index
+          KeySchema:
+            - AttributeName: email
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
       StreamSpecification:
         StreamViewType: NEW_AND_OLD_IMAGES
 
@@ -116,6 +125,42 @@ Resources:
     DeletionPolicy: Delete
     Properties:
       LogGroupName: !Sub /aws/lambda/${SignupLambda}
+      RetentionInDays: 1
+
+  LoginLambda:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+    Properties:
+      Description: !Sub ${AWS::StackName}-${Environment}-LoginLambda
+      CodeUri: .
+      Handler: src/login/index.handler
+      MemorySize: 128
+      Environment:
+        Variables:
+          USERS_TABLE_NAME: !Ref Users
+          CLIENTS_TABLE_NAME: !Ref Clients
+          AUTHCODES_TABLE_NAME: !Ref AuthCodes
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref Users
+        - DynamoDBReadPolicy:
+            TableName: !Ref Clients
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AuthCodes
+      Events:
+        OAuth2APIPOSToauth2login:
+          Type: Api
+          Properties:
+            Path: /oauth2/login
+            Method: POST
+            RestApiId: !Ref OAuth2API
+
+  LoginLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${LoginLambda}
       RetentionInDays: 1
 
   TokenLambda:
@@ -223,6 +268,13 @@ Resources:
                 httpMethod: POST
                 type: aws_proxy
                 uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ValidateLambda.Arn}/invocations
+              responses: {}
+          /oauth2/login:
+            post:
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LoginLambda.Arn}/invocations
               responses: {}
       EndpointConfiguration: REGIONAL
       TracingEnabled: false

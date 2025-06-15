@@ -1,7 +1,6 @@
 import { LambdaInterface } from '@aws-lambda-powertools/commons/types';
-import { DynamoDBClient, GetItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
 import bcrypt from "bcryptjs";
-import { v4 as uuid } from 'uuid';
 import crypto from "crypto";
 import { Logger } from '@aws-lambda-powertools/logger';
 
@@ -13,7 +12,7 @@ const USERS_TABLE_NAME = process.env.USERS_TABLE_NAME || '';
 const CLIENTS_TABLE_NAME = process.env.CLIENTS_TABLE_NAME || '';
 const AUTHCODES_TABLE_NAME = process.env.AUTHCODES_TABLE_NAME || '';
 
-export class SignupFunction implements LambdaInterface {
+export class LoginFunction implements LambdaInterface {
 	
 	async handler(event: any): Promise<any> {
 
@@ -62,37 +61,35 @@ export class SignupFunction implements LambdaInterface {
 						}
 					}
 
-					const getUserCommand = new GetItemCommand({
+					const getUserCommand = new QueryCommand({
 						TableName: USERS_TABLE_NAME,
-						Key: {
-							email: { S: email }
-						}
+						IndexName: "email-index",
+						KeyConditionExpression: "email = :email",
+						ExpressionAttributeValues: {
+							":email": { S: email }
+						},
+						Limit: 1
 					});
 
 					const existingUser = await dynamoDBClient.send(getUserCommand);
 
-					if (existingUser.Item) {
+					if (existingUser.Count == 0) {
 						return {
-							statusCode: 409,
-							body: JSON.stringify({ error: 'User already exists' })
+							statusCode: 401,
+							body: JSON.stringify({ error: 'Invalid username or password.' })
 						};
 					}
 
-					const hashedPassword = await bcrypt.hash(password, 10);
+					const isMatching = await bcrypt.compare(password, existingUser.Items![0].password.S!);
 				
-					const uid = uuid();
-
-					const createUserCommand = new PutItemCommand({
-						TableName: USERS_TABLE_NAME,
-						Item: {
-							user_id: { S: uid },
-							email: { S: email },
-							password: { S: hashedPassword },
-							allowed_scopes: { SS: ['profile'] },
-						}
-					});
-
-					await dynamoDBClient.send(createUserCommand);
+					if(!isMatching) {
+						return {
+							statusCode: 401,
+							body: JSON.stringify({ error: 'Invalid username or password.' })
+						};
+					}
+				
+					const scopes = scope.split(" ").filter(item => existingUser.Items![0].allowed_scopes.SS!.includes(item));
 					
 					const authCode = crypto.randomBytes(32).toString('hex');
 
@@ -102,8 +99,8 @@ export class SignupFunction implements LambdaInterface {
 							auth_code: { S: authCode },
 							client_id: { S: client_id },
 							redirect_uri: { S: redirect_uri },
-							scope: { SS: scope.split(' ') },
-							user_id: { S: uid }, 
+							scope: { SS: scopes },
+							user_id: { S: existingUser.Items![0].user_id.S! }, 
 							expires_at: { N: Math.floor((Date.now() + 300_000) / 1000).toString() }
 						}
 					});
@@ -111,7 +108,7 @@ export class SignupFunction implements LambdaInterface {
 					await dynamoDBClient.send(createAuthCodeCommand);
 
 					return {
-						statusCode: 201,
+						statusCode: 200,
 						body: JSON.stringify({
 							authCode
 						})
@@ -145,4 +142,4 @@ export class SignupFunction implements LambdaInterface {
 	}
 }
 
-export const handler = new SignupFunction().handler.bind(new SignupFunction());
+export const handler = new LoginFunction().handler.bind(new LoginFunction());
