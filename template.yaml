@@ -1,0 +1,193 @@
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - staging
+      - dev
+      - prod
+    Description: Environment for the stack (dev or prod)
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: nodejs20.x
+    Tracing: Disabled
+    Architectures:
+      - x86_64
+
+Resources:
+  Clients:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${AWS::StackName}-${Environment}-clients
+      AttributeDefinitions:
+        - AttributeName: client_id
+          AttributeType: S
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: client_id
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+
+  Users:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${AWS::StackName}-${Environment}-users
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+
+  RefreshTokens:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${AWS::StackName}-${Environment}-refresh-tokens
+      AttributeDefinitions:
+        - AttributeName: refresh_token
+          AttributeType: S
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: refresh_token
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      TimeToLiveSpecification:
+        Enabled: true
+        AttributeName: expires_at
+
+  AuthCodes:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${AWS::StackName}-${Environment}-auth-codes
+      AttributeDefinitions:
+        - AttributeName: auth_code
+          AttributeType: S
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: auth_code
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      TimeToLiveSpecification:
+        Enabled: true
+        AttributeName: expires_at
+
+  SignupLambda:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+    Properties:
+      Description: !Sub ${AWS::StackName}-${Environment}-SignupLambda
+      CodeUri: .
+      Handler: src/signup/index.handler
+      MemorySize: 128
+      Environment:
+        Variables:
+          USERS_TABLE_NAME: !Ref Users
+          CLIENTS_TABLE_NAME: !Ref Clients
+          AUTHCODES_TABLE_NAME: !Ref AuthCodes
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref Users
+        - DynamoDBReadPolicy:
+            TableName: !Ref Clients
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AuthCodes
+
+      Events:
+        OAuth2APIPOSToauth2signup:
+          Type: Api
+          Properties:
+            Path: /oauth2/signup
+            Method: POST
+            RestApiId: !Ref OAuth2API
+
+  SignupLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${SignupLambda}
+      RetentionInDays: 1
+
+  TokenLambda:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+    Properties:
+      Description: !Sub ${AWS::StackName}-${Environment}-TokenLambda
+      CodeUri: .
+      Handler: src/token/index.handler
+      MemorySize: 128
+      Environment:
+        Variables:
+          CLIENTS_TABLE_NAME: !Ref Clients
+          AUTHCODES_TABLE_NAME: !Ref AuthCodes
+          REFRESHTOKENS_TABLE_NAME: !Ref RefreshTokens
+          JWT_SECRET_NAME: !Ref JWTSECRET
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref Users
+        - DynamoDBReadPolicy:
+            TableName: !Ref Clients
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AuthCodes
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref JWTSECRET
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RefreshTokens
+      Events:
+        OAuth2APIPOSToauth2token:
+          Type: Api
+          Properties:
+            Path: /oauth2/token
+            Method: POST
+            RestApiId: !Ref OAuth2API
+
+  TokenLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${TokenLambda}
+      RetentionInDays: 1
+
+  JWTSECRET:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Value: Default Secret
+  OAuth2API:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub ${AWS::StackName}-${Environment}-OAuth2API
+      StageName: Prod
+      DefinitionBody:
+        openapi: '3.0'
+        info: {}
+        paths:
+          /oauth2/signup:
+            post:
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SignupLambda.Arn}/invocations
+              responses: {}
+          /oauth2/token:
+            post:
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TokenLambda.Arn}/invocations
+              responses: {}
+      EndpointConfiguration: REGIONAL
+      TracingEnabled: false
+      Cors:
+        MaxAge: 5

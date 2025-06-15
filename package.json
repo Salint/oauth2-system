@@ -1,0 +1,36 @@
+{
+  "name": "oauth2-system",
+  "version": "1.0.0",
+  "description": "A OAuth2.0-compliant auth system using AWS SAM.",
+  "homepage": "https://github.com/Salint/oauth2-system#readme",
+  "bugs": {
+    "url": "https://github.com/Salint/oauth2-system/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Salint/oauth2-system.git"
+  },
+  "license": "UNLICENSED",
+  "author": "Salint",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@aws-lambda-powertools/commons": "^2.21.0",
+    "@aws-lambda-powertools/logger": "^2.21.0",
+    "@aws-sdk/client-dynamodb": "^3.828.0",
+    "@aws-sdk/client-ssm": "^3.828.0",
+    "@types/bcryptjs": "^2.4.6",
+    "bcryptjs": "^3.0.2",
+    "esbuild": "^0.25.5",
+    "jsonwebtoken": "^9.0.2",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.149",
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/node": "^24.0.1"
+  }
+}

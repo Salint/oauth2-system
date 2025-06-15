@@ -1,0 +1,6 @@
+
+{
+    "external": [
+        "@aws-sdk/*"
+    ]
+}
