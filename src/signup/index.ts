@@ -60,33 +60,33 @@ export class SignupFunction implements LambdaInterface {
 				}
 				const data = JSON.parse(new TextDecoder().decode(validateClientResult.Payload));
 
+				if(scope != "profile") {
+					return {
+						statusCode: 403,
+						body: JSON.stringify({ error: 'Invalid scopes' })
+					}
+				}
+
+				const getUserCommand = new QueryCommand({
+					TableName: USERS_TABLE_NAME,
+					IndexName: "email-index",
+					KeyConditionExpression: "email = :email",
+					ExpressionAttributeValues: {
+						":email": { S: email }
+					},
+					Limit: 1
+				});
+
+				const existingUser = await dynamoDBClient.send(getUserCommand);
+
+				if (existingUser.Items?.length != 0) {
+					return {
+						statusCode: 409,
+						body: JSON.stringify({ error: 'User already exists' })
+					};
+				}
+
 				if (data.secretClient) {
-				
-					if(scope != "profile") {
-						return {
-							statusCode: 403,
-							body: JSON.stringify({ error: 'Invalid scopes' })
-						}
-					}
-
-					const getUserCommand = new QueryCommand({
-						TableName: USERS_TABLE_NAME,
-						IndexName: "email-index",
-						KeyConditionExpression: "email = :email",
-						ExpressionAttributeValues: {
-							":email": { S: email }
-						},
-						Limit: 1
-					});
-
-					const existingUser = await dynamoDBClient.send(getUserCommand);
-
-					if (existingUser.Items?.length != 0) {
-						return {
-							statusCode: 409,
-							body: JSON.stringify({ error: 'User already exists' })
-						};
-					}
 
 					const hashedPassword = await bcrypt.hash(password, 10);
 				
@@ -128,11 +128,62 @@ export class SignupFunction implements LambdaInterface {
 					}
 				}
 				else {
-					// TODO: PKCE
+					const { code_challenge, code_challenge_method } = event.queryStringParameters;
+
+					if(!code_challenge || !code_challenge_method) {
+						return {
+							statusCode: 400,
+							body: JSON.stringify({ error: 'Missing `code_challenge` or `code_challenge_method`' })
+						}
+					}
+
+					if(!["S256", "plain"].includes(code_challenge_method)) {
+						return {
+							statusCode: 400,
+							body: JSON.stringify({ error: 'Invalid `code_challenge_method' })
+						}
+					}
+
+					const hashedPassword = await bcrypt.hash(password, 10);
+				
+					const uid = uuid();
+
+					const createUserCommand = new PutItemCommand({
+						TableName: USERS_TABLE_NAME,
+						Item: {
+							user_id: { S: uid },
+							email: { S: email },
+							password: { S: hashedPassword },
+							allowed_scopes: { SS: ['profile'] },
+						}
+					});
+
+					await dynamoDBClient.send(createUserCommand);
+					
+					const authCode = crypto.randomBytes(32).toString('hex');
+
+					const createAuthCodeCommand = new PutItemCommand({
+						TableName: AUTHCODES_TABLE_NAME,
+						Item: {
+							auth_code: { S: authCode },
+							client_id: { S: client_id },
+							redirect_uri: { S: redirect_uri },
+							code_challenge: { S: code_challenge },
+							code_challenge_method: { S: code_challenge_method },
+							scope: { SS: scope.split(' ') },
+							user_id: { S: uid }, 
+							expires_at: { N: Math.floor((Date.now() + 300_000) / 1000).toString() }
+						}
+					});
+
+					await dynamoDBClient.send(createAuthCodeCommand);
+
 					return {
-						statusCode: 400,
-						body: JSON.stringify({ error: 'Client does not have a client_secret' })
-					};
+						statusCode: 201,
+						body: JSON.stringify({
+							authCode
+						})
+					}
 				}
 
 			}

@@ -58,48 +58,48 @@ export class LoginFunction implements LambdaInterface {
 				}
 				const data = JSON.parse(new TextDecoder().decode(validateClientResult.Payload));
 
+				if(scope != "profile") {
+					return {
+						statusCode: 403,
+						body: JSON.stringify({ error: 'Invalid scopes' })
+					}
+				}
+		
+				const getUserCommand = new QueryCommand({
+					TableName: USERS_TABLE_NAME,
+					IndexName: "email-index",
+					KeyConditionExpression: "email = :email",
+					ExpressionAttributeValues: {
+						":email": { S: email }
+					},
+					Limit: 1
+				});
+
+				const existingUser = await dynamoDBClient.send(getUserCommand);
+
+				if (existingUser.Count == 0) {
+					return {
+						statusCode: 401,
+						body: JSON.stringify({ error: 'Invalid username or password.' })
+					};
+				}
+
+				const isMatching = await bcrypt.compare(password, existingUser.Items![0].password.S!);
+			
+				if(!isMatching) {
+					return {
+						statusCode: 401,
+						body: JSON.stringify({ error: 'Invalid username or password.' })
+					};
+				}
+			
+				const scopes = scope.split(" ").filter(item => existingUser.Items![0].allowed_scopes.SS!.includes(item));
+				
+				const authCode = crypto.randomBytes(32).toString('hex');
+
+
 				if (data.secretClient) {
-						
-					if(scope != "profile") {
-						return {
-							statusCode: 403,
-							body: JSON.stringify({ error: 'Invalid scopes' })
-						}
-					}
-				
-
-					const getUserCommand = new QueryCommand({
-						TableName: USERS_TABLE_NAME,
-						IndexName: "email-index",
-						KeyConditionExpression: "email = :email",
-						ExpressionAttributeValues: {
-							":email": { S: email }
-						},
-						Limit: 1
-					});
-
-					const existingUser = await dynamoDBClient.send(getUserCommand);
-
-					if (existingUser.Count == 0) {
-						return {
-							statusCode: 401,
-							body: JSON.stringify({ error: 'Invalid username or password.' })
-						};
-					}
-
-					const isMatching = await bcrypt.compare(password, existingUser.Items![0].password.S!);
-				
-					if(!isMatching) {
-						return {
-							statusCode: 401,
-							body: JSON.stringify({ error: 'Invalid username or password.' })
-						};
-					}
-				
-					const scopes = scope.split(" ").filter(item => existingUser.Items![0].allowed_scopes.SS!.includes(item));
 					
-					const authCode = crypto.randomBytes(32).toString('hex');
-
 					const createAuthCodeCommand = new PutItemCommand({
 						TableName: AUTHCODES_TABLE_NAME,
 						Item: {
@@ -122,11 +122,45 @@ export class LoginFunction implements LambdaInterface {
 					}
 				}
 				else {
-					// TODO: PKCE
+					const { code_challenge, code_challenge_method } = event.queryStringParameters;
+
+					if(!code_challenge || !code_challenge_method) {
+						return {
+							statusCode: 400,
+							body: JSON.stringify({ error: 'Missing `code_challenge` or `code_challenge_method`' })
+						}
+					}
+
+					if(!["S256", "plain"].includes(code_challenge_method)) {
+						return {
+							statusCode: 400,
+							body: JSON.stringify({ error: 'Invalid `code_challenge_method' })
+						}
+					}
+
+					const createAuthCodeCommand = new PutItemCommand({
+						TableName: AUTHCODES_TABLE_NAME,
+						Item: {
+							auth_code: { S: authCode },
+							client_id: { S: client_id },
+							redirect_uri: { S: redirect_uri },
+							scope: { SS: scopes },
+							code_challenge: { S: code_challenge },
+							code_challenge_method: { S: code_challenge_method },
+							user_id: { S: existingUser.Items![0].user_id.S! }, 
+							expires_at: { N: Math.floor((Date.now() + 300_000) / 1000).toString() }
+						}
+					});
+
+					await dynamoDBClient.send(createAuthCodeCommand);
+
 					return {
-						statusCode: 400,
-						body: JSON.stringify({ error: 'Client does not have a client_secret' })
-					};
+						statusCode: 200,
+						body: JSON.stringify({
+							authCode
+						})
+					}
+					
 				}
 
 			}

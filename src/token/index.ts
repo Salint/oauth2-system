@@ -72,21 +72,22 @@ export class TokenFunction implements LambdaInterface {
 
 			try {
 
-				if (data.secretClient) {
-					const getAuthCodeCommand = new GetItemCommand({
-						TableName: AUTHCODES_TABLE_NAME,
-						Key: {
-							auth_code: { S: code }
-						},
-					});
-					const authCodeData = await dynamoDBClient.send(getAuthCodeCommand);
+				const getAuthCodeCommand = new GetItemCommand({
+					TableName: AUTHCODES_TABLE_NAME,
+					Key: {
+						auth_code: { S: code }
+					},
+				});
+				const authCodeData = await dynamoDBClient.send(getAuthCodeCommand);
 
-					if (!authCodeData.Item || authCodeData.Item.client_id.S !== client_id) {
-						return {
-							statusCode: 400,
-							body: JSON.stringify({ error: 'Invalid authorization code' })
-						};
-					}
+				if (!authCodeData.Item || authCodeData.Item.client_id.S !== client_id) {
+					return {
+						statusCode: 400,
+						body: JSON.stringify({ error: 'Invalid authorization code' })
+					};
+				}
+
+				if (data.secretClient) {
 
 					const jwtSecretCommand = new GetParameterCommand({
 						Name: JWT_SECRET_NAME,
@@ -146,10 +147,93 @@ export class TokenFunction implements LambdaInterface {
 					
 				}
 				else {
-					// TODO: PKCE
+					const { code_verifier } = body;
+
+					if(!code_verifier) {
+						return {
+							statusCode: 400,
+							body: JSON.stringify({ error: 'Missing `code_verifier`' })
+						}
+					}
+					
+					if(authCodeData.Item!.code_challenge_method.S! === "plain" && code_verifier !== authCodeData.Item!.code_challenge.S!) {
+						return {
+							statusCode: 403,
+							body: JSON.stringify({ error: 'Invalid `code_verifier`' })
+						}
+					}
+					else if(authCodeData.Item!.code_challenge_method.S! === "S256") {
+						const hashedVerifier = crypto
+							.createHash('sha256')
+							.update(code_verifier)
+							.digest('base64')
+							.replace(/\+/g, '-')
+							.replace(/\//g, '_')
+							.replace(/=/g, '');
+
+						if (hashedVerifier !== authCodeData.Item!.code_challenge.S) {
+							return {
+								statusCode: 403,
+								body: JSON.stringify({ error: 'Invalid `code_verifier`' })
+							}
+							
+						}
+					}
+					const jwtSecretCommand = new GetParameterCommand({
+						Name: JWT_SECRET_NAME,
+						WithDecryption: true,
+					});
+
+					const jwtSecret = await ssmClient.send(jwtSecretCommand);
+
+					if (!jwtSecret.Parameter || !jwtSecret.Parameter.Value) {
+						throw new Error('JWT secret not found in SSM');	
+					} 
+
+					const accessToken = jwt.sign(
+						{
+							client_id: client_id,
+							scope: authCodeData.Item.scope.SS || [],
+							iat: Math.floor(Date.now() / 1000),
+							aud: authCodeData.Item.redirect_uri.S,
+							sub: authCodeData.Item.user_id.S,
+							exp: Math.floor(Date.now() / 1000) + (10 * 60),
+						},
+						jwtSecret.Parameter.Value
+					);
+
+					const refreshToken = crypto.randomBytes(64).toString('hex');
+
+					const createRefreshTokenCommand = new PutItemCommand({
+						TableName: REFRESHTOKENS_TABLE_NAME,
+						Item: {
+							refresh_token: { S: refreshToken },
+							client_id: { S: client_id },
+							user_id: { S: authCodeData.Item.user_id.S! },
+							aud: { S: authCodeData.Item.redirect_uri.S! },
+							
+							expires_at: { N: Math.floor((Date.now() + 30 * 24 * 60 * 60 * 1000) / 1000).toString() },
+							scope: { SS: authCodeData.Item.scope.SS || [] },
+						}
+					});
+					
+					const deleteAuthCodeCommand = new DeleteItemCommand({
+						TableName: AUTHCODES_TABLE_NAME,
+						Key: {
+							auth_code: { S: code }
+						}
+					});
+
+					await dynamoDBClient.send(deleteAuthCodeCommand);
+					await dynamoDBClient.send(createRefreshTokenCommand);
+
 					return {
-						statusCode: 400,
-						body: JSON.stringify({ error: 'Client does not have secret.' })
+						statusCode: 200,
+						body: JSON.stringify({
+							access_token: accessToken,
+							refresh_token: refreshToken,
+							token_type: 'Bearer',
+						}),
 					};
 				}
 			} 
