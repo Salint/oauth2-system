@@ -94,34 +94,19 @@ export class LoginFunction implements LambdaInterface {
 				}
 			
 				const scopes = scope.split(" ").filter(item => existingUser.Items![0].allowed_scopes.SS!.includes(item));
-				
+	
 				const authCode = crypto.randomBytes(32).toString('hex');
 
+				let itemObject: { [key: string]: any } = {
+					auth_code: { S: authCode },
+					client_id: { S: client_id },
+					redirect_uri: { S: redirect_uri },
+					scope: { SS: scopes },
+					user_id: { S: existingUser.Items![0].user_id.S! }, 
+					expires_at: { N: Math.floor((Date.now() + 300_000) / 1000).toString() }
+				};
 
-				if (data.secretClient) {
-					
-					const createAuthCodeCommand = new PutItemCommand({
-						TableName: AUTHCODES_TABLE_NAME,
-						Item: {
-							auth_code: { S: authCode },
-							client_id: { S: client_id },
-							redirect_uri: { S: redirect_uri },
-							scope: { SS: scopes },
-							user_id: { S: existingUser.Items![0].user_id.S! }, 
-							expires_at: { N: Math.floor((Date.now() + 300_000) / 1000).toString() }
-						}
-					});
-
-					await dynamoDBClient.send(createAuthCodeCommand);
-
-					return {
-						statusCode: 200,
-						body: JSON.stringify({
-							authCode
-						})
-					}
-				}
-				else {
+				if (!data.secretClient) {
 					const { code_challenge, code_challenge_method } = event.queryStringParameters;
 
 					if(!code_challenge || !code_challenge_method) {
@@ -138,29 +123,22 @@ export class LoginFunction implements LambdaInterface {
 						}
 					}
 
-					const createAuthCodeCommand = new PutItemCommand({
-						TableName: AUTHCODES_TABLE_NAME,
-						Item: {
-							auth_code: { S: authCode },
-							client_id: { S: client_id },
-							redirect_uri: { S: redirect_uri },
-							scope: { SS: scopes },
-							code_challenge: { S: code_challenge },
-							code_challenge_method: { S: code_challenge_method },
-							user_id: { S: existingUser.Items![0].user_id.S! }, 
-							expires_at: { N: Math.floor((Date.now() + 300_000) / 1000).toString() }
-						}
-					});
+					itemObject.code_challenge = { S: code_challenge };
+					itemObject.code_challenge_method = { S: code_challenge_method };
 
-					await dynamoDBClient.send(createAuthCodeCommand);
+				}
+				const createAuthCodeCommand = new PutItemCommand({
+					TableName: AUTHCODES_TABLE_NAME,
+					Item: itemObject
+				});
 
-					return {
-						statusCode: 200,
-						body: JSON.stringify({
-							authCode
-						})
-					}
-					
+				await dynamoDBClient.send(createAuthCodeCommand);
+
+				return {
+					statusCode: 200,
+					body: JSON.stringify({
+						authCode
+					})
 				}
 
 			}

@@ -86,48 +86,35 @@ export class SignupFunction implements LambdaInterface {
 					};
 				}
 
-				if (data.secretClient) {
-
-					const hashedPassword = await bcrypt.hash(password, 10);
+				const hashedPassword = await bcrypt.hash(password, 10);
 				
-					const uid = uuid();
+				const uid = uuid();
 
-					const createUserCommand = new PutItemCommand({
-						TableName: USERS_TABLE_NAME,
-						Item: {
-							user_id: { S: uid },
-							email: { S: email },
-							password: { S: hashedPassword },
-							allowed_scopes: { SS: ['profile'] },
-						}
-					});
-
-					await dynamoDBClient.send(createUserCommand);
-					
-					const authCode = crypto.randomBytes(32).toString('hex');
-
-					const createAuthCodeCommand = new PutItemCommand({
-						TableName: AUTHCODES_TABLE_NAME,
-						Item: {
-							auth_code: { S: authCode },
-							client_id: { S: client_id },
-							redirect_uri: { S: redirect_uri },
-							scope: { SS: scope.split(' ') },
-							user_id: { S: uid }, 
-							expires_at: { N: Math.floor((Date.now() + 300_000) / 1000).toString() }
-						}
-					});
-
-					await dynamoDBClient.send(createAuthCodeCommand);
-
-					return {
-						statusCode: 201,
-						body: JSON.stringify({
-							authCode
-						})
+				const createUserCommand = new PutItemCommand({
+					TableName: USERS_TABLE_NAME,
+					Item: {
+						user_id: { S: uid },
+						email: { S: email },
+						password: { S: hashedPassword },
+						allowed_scopes: { SS: ['profile'] },
 					}
-				}
-				else {
+				});
+
+				await dynamoDBClient.send(createUserCommand);
+				
+				const authCode = crypto.randomBytes(32).toString('hex');
+
+
+				let itemObject: { [key: string]: any } = {
+					auth_code: { S: authCode },
+					client_id: { S: client_id },
+					redirect_uri: { S: redirect_uri },
+					scope: { SS: scope.split(' ') },
+					user_id: { S: uid }, 
+					expires_at: { N: Math.floor((Date.now() + 300_000) / 1000).toString() }
+				};
+
+				if (!data.secretClient)  {
 					const { code_challenge, code_challenge_method } = event.queryStringParameters;
 
 					if(!code_challenge || !code_challenge_method) {
@@ -144,47 +131,18 @@ export class SignupFunction implements LambdaInterface {
 						}
 					}
 
-					const hashedPassword = await bcrypt.hash(password, 10);
-				
-					const uid = uuid();
 
-					const createUserCommand = new PutItemCommand({
-						TableName: USERS_TABLE_NAME,
-						Item: {
-							user_id: { S: uid },
-							email: { S: email },
-							password: { S: hashedPassword },
-							allowed_scopes: { SS: ['profile'] },
-						}
-					});
+					itemObject.code_challenge = { S: code_challenge };
+					itemObject.code_challenge_method = { S: code_challenge_method };
 
-					await dynamoDBClient.send(createUserCommand);
-					
-					const authCode = crypto.randomBytes(32).toString('hex');
-
-					const createAuthCodeCommand = new PutItemCommand({
-						TableName: AUTHCODES_TABLE_NAME,
-						Item: {
-							auth_code: { S: authCode },
-							client_id: { S: client_id },
-							redirect_uri: { S: redirect_uri },
-							code_challenge: { S: code_challenge },
-							code_challenge_method: { S: code_challenge_method },
-							scope: { SS: scope.split(' ') },
-							user_id: { S: uid }, 
-							expires_at: { N: Math.floor((Date.now() + 300_000) / 1000).toString() }
-						}
-					});
-
-					await dynamoDBClient.send(createAuthCodeCommand);
-
-					return {
-						statusCode: 201,
-						body: JSON.stringify({
-							authCode
-						})
-					}
 				}
+
+				const createAuthCodeCommand = new PutItemCommand({
+					TableName: AUTHCODES_TABLE_NAME,
+					Item: itemObject
+				});
+
+				await dynamoDBClient.send(createAuthCodeCommand);
 
 			}
 			catch (error) {
