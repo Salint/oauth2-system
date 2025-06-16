@@ -312,3 +312,19 @@ Resources:
       TracingEnabled: false
       Cors:
         MaxAge: 5
+Metadata:
+  AWS::Composer::Groups:
+    EndpointHandlers:
+      Label: Endpoint Handlers
+      Members:
+        - SignupLambda
+        - TokenLambda
+        - ValidateLambda
+        - LoginLambda
+    Tables:
+      Label: Tables
+      Members:
+        - AuthCodes
+        - RefreshTokens
+        - Clients
+        - Users
