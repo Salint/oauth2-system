@@ -4,13 +4,15 @@ import { Logger } from '@aws-lambda-powertools/logger';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 
 const dynamoDBClient = new DynamoDBClient();
 const ssmClient = new SSMClient();
+const lambdaClient = new LambdaClient
 
 const logger = new Logger();
 
-const CLIENTS_TABLE_NAME = process.env.CLIENTS_TABLE_NAME || '';
+const VALIDATECLIENTLAMBDA_FUNCTION_NAME = process.env.VALIDATECLIENTLAMBDA_FUNCTION_NAME || '';
 const AUTHCODES_TABLE_NAME = process.env.AUTHCODES_TABLE_NAME || '';
 const REFRESHTOKENS_TABLE_NAME = process.env.REFRESHTOKENS_TABLE_NAME || '';
 const JWT_SECRET_NAME = process.env.JWT_SECRET_NAME || '';
@@ -29,13 +31,33 @@ export class TokenFunction implements LambdaInterface {
 			}
 		}
 
-
-		const getClientCommand = new GetItemCommand({
-			TableName: CLIENTS_TABLE_NAME,
-			Key: {
-				client_id: { S: client_id }
-			},
+		const validateClientCommand = new InvokeCommand({
+			FunctionName: VALIDATECLIENTLAMBDA_FUNCTION_NAME,
+			Payload: JSON.stringify({
+				client_id,
+				client_secret
+			})
 		});
+
+		const validateClientResult = await lambdaClient.send(validateClientCommand);
+
+		if(validateClientResult.FunctionError) {
+			const error = JSON.parse(new TextDecoder().decode(validateClientResult.Payload));
+
+			if(error.errorMessage === "not-found") {
+				return {
+					statusCode: 400,
+					body: JSON.stringify({ error: 'Invalid client_id' })
+				};
+			}
+			else if(error.errorMessage === "invalid-redirect-uri") {
+				return {
+					statusCode: 400,
+					body: JSON.stringify({ error: "Invalid redirect_uri" })
+				}
+			}
+		}
+		const data = JSON.parse(new TextDecoder().decode(validateClientResult.Payload));
 
 		if(grant_type === "authorization_code") {
 
@@ -50,15 +72,7 @@ export class TokenFunction implements LambdaInterface {
 
 			try {
 
-				const clientData = await dynamoDBClient.send(getClientCommand);
-
-				if (!clientData.Item) {
-					return {
-						statusCode: 400,
-						body: JSON.stringify({ error: 'Invalid client_id' })
-					};
-				}
-				if(clientData.Item.client_secret?.S) {
+				if (data.secretClient) {
 					const getAuthCodeCommand = new GetItemCommand({
 						TableName: AUTHCODES_TABLE_NAME,
 						Key: {
@@ -71,13 +85,6 @@ export class TokenFunction implements LambdaInterface {
 						return {
 							statusCode: 400,
 							body: JSON.stringify({ error: 'Invalid authorization code' })
-						};
-					}
-
-					if(clientData.Item.client_secret.S !== client_secret) {
-						return {
-							statusCode: 403,
-							body: JSON.stringify({ error: 'Invalid client_secret' })
 						};
 					}
 
@@ -157,105 +164,88 @@ export class TokenFunction implements LambdaInterface {
 		else if(grant_type === "refresh_token") {
 
 			try {
+				
+					
+				const { refresh_token: refreshToken } = body;
 
-				const clientData = await dynamoDBClient.send(getClientCommand);
-
-				if (!clientData.Item) {
+				if(!refreshToken) {
 					return {
 						statusCode: 400,
-						body: JSON.stringify({ error: 'Invalid client_id' })
-					};
+						body: JSON.stringify({ error: 'Missing `refresh_token`' })
+					}
 				}
-				if(clientData.Item.client_secret?.S) {
-					
-					const { refresh_token: refreshToken } = body;
-
-					if(!refreshToken) {
-						return {
-							statusCode: 400,
-							body: JSON.stringify({ error: 'Missing `refresh_token`' })
-						}
-					}
-
-					if(clientData.Item.client_secret.S !== client_secret) {
-						return {
-							statusCode: 403,
-							body: JSON.stringify({ error: 'Invalid client_secret' })
-						};
-					}
 
 
-					const removeToken = new DeleteItemCommand({
-						TableName: REFRESHTOKENS_TABLE_NAME,
-						Key: {
-							refresh_token: { S: refreshToken }
-						},
-						ConditionExpression: "client_id = :clientId",
-						ExpressionAttributeValues: {
-							"clientId": client_id
-						},
-						ReturnValues: "ALL_OLD"
-					});
+				const removeToken = new DeleteItemCommand({
+					TableName: REFRESHTOKENS_TABLE_NAME,
+					Key: {
+						refresh_token: { S: refreshToken }
+					},
+					ConditionExpression: "client_id = :clientId",
+					ExpressionAttributeValues: {
+						"clientId": client_id
+					},
+					ReturnValues: "ALL_OLD"
+				});
 
-					const refreshTokenResult = await dynamoDBClient.send(removeToken);
+				const refreshTokenResult = await dynamoDBClient.send(removeToken);
 
-					if(!refreshTokenResult.Attributes) {
-						return {
-							statusCode: 401, 
-							body: JSON.stringify({ error: 'Invalid refresh token' })
-						}
-					}
-
-
-					const jwtSecretCommand = new GetParameterCommand({
-						Name: JWT_SECRET_NAME,
-						WithDecryption: true,
-					});
-
-					const jwtSecret = await ssmClient.send(jwtSecretCommand);
-
-					if (!jwtSecret.Parameter || !jwtSecret.Parameter.Value) {
-						throw new Error('JWT secret not found in SSM');	
-					} 
-
-					const accessToken = jwt.sign(
-						{
-							client_id: client_id,
-							scope:refreshTokenResult.Attributes!.scope.SS!,
-							iat: Math.floor(Date.now() / 1000),
-							aud: refreshTokenResult.Attributes!.aud.S!,
-							sub: refreshTokenResult.Attributes!.user_id.S!,
-							exp: Math.floor(Date.now() / 1000) + (10 * 60),
-						},
-						jwtSecret.Parameter.Value
-					);
-
-					const newRefreshToken = crypto.randomBytes(64).toString('hex');
-
-					const createRefreshTokenCommand = new PutItemCommand({
-						TableName: REFRESHTOKENS_TABLE_NAME,
-						Item: {
-							refresh_token: { S: newRefreshToken },
-							client_id: { S: client_id },
-							user_id: { S: refreshTokenResult.Attributes!.user_id.S! },
-							aud: { S: refreshTokenResult.Attributes!.aud.S! },
-							expires_at: { N: Math.floor((Date.now() + 30 * 24 * 60 * 60 * 1000) / 1000).toString() },
-							scope: { SS: refreshTokenResult.Attributes!.scope.SS! },
-						}
-					});
-
-					await dynamoDBClient.send(createRefreshTokenCommand);
-
+				if(!refreshTokenResult.Attributes) {
 					return {
-						statusCode: 200,
-						body: JSON.stringify({
-							access_token: accessToken,
-							refresh_token: newRefreshToken,
-							token_type: 'Bearer',
-						}),
-					};
-
+						statusCode: 401, 
+						body: JSON.stringify({ error: 'Invalid refresh token' })
+					}
 				}
+
+
+				const jwtSecretCommand = new GetParameterCommand({
+					Name: JWT_SECRET_NAME,
+					WithDecryption: true,
+				});
+
+				const jwtSecret = await ssmClient.send(jwtSecretCommand);
+
+				if (!jwtSecret.Parameter || !jwtSecret.Parameter.Value) {
+					throw new Error('JWT secret not found in SSM');	
+				} 
+
+				const accessToken = jwt.sign(
+					{
+						client_id: client_id,
+						scope:refreshTokenResult.Attributes!.scope.SS!,
+						iat: Math.floor(Date.now() / 1000),
+						aud: refreshTokenResult.Attributes!.aud.S!,
+						sub: refreshTokenResult.Attributes!.user_id.S!,
+						exp: Math.floor(Date.now() / 1000) + (10 * 60),
+					},
+					jwtSecret.Parameter.Value
+				);
+
+				const newRefreshToken = crypto.randomBytes(64).toString('hex');
+
+				const createRefreshTokenCommand = new PutItemCommand({
+					TableName: REFRESHTOKENS_TABLE_NAME,
+					Item: {
+						refresh_token: { S: newRefreshToken },
+						client_id: { S: client_id },
+						user_id: { S: refreshTokenResult.Attributes!.user_id.S! },
+						aud: { S: refreshTokenResult.Attributes!.aud.S! },
+						expires_at: { N: Math.floor((Date.now() + 30 * 24 * 60 * 60 * 1000) / 1000).toString() },
+						scope: { SS: refreshTokenResult.Attributes!.scope.SS! },
+					}
+				});
+
+				await dynamoDBClient.send(createRefreshTokenCommand);
+
+				return {
+					statusCode: 200,
+					body: JSON.stringify({
+						access_token: accessToken,
+						refresh_token: newRefreshToken,
+						token_type: 'Bearer',
+					}),
+				};
+
 			} catch(error) {
 				logger.error('Error processing refresh_token grant', { error });
 				return {

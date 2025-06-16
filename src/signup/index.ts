@@ -1,17 +1,19 @@
 import { LambdaInterface } from '@aws-lambda-powertools/commons/types';
-import { DynamoDBClient, GetItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, PutItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
 import bcrypt from "bcryptjs";
 import { v4 as uuid } from 'uuid';
 import crypto from "crypto";
 import { Logger } from '@aws-lambda-powertools/logger';
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 
 const dynamoDBClient = new DynamoDBClient();
+const lambdaClient = new LambdaClient();
 
 const logger = new Logger();
 
 const USERS_TABLE_NAME = process.env.USERS_TABLE_NAME || '';
-const CLIENTS_TABLE_NAME = process.env.CLIENTS_TABLE_NAME || '';
 const AUTHCODES_TABLE_NAME = process.env.AUTHCODES_TABLE_NAME || '';
+const VALIDATECLIENTLAMBDA_FUNCTION_NAME = process.env.VALIDATECLIENTLAMBDA_FUNCTION_NAME || '';
 
 export class SignupFunction implements LambdaInterface {
 	
@@ -29,31 +31,36 @@ export class SignupFunction implements LambdaInterface {
 		}
 		if (response_type === 'code') {
 
-			const getClientCommand = new GetItemCommand({
-				TableName: CLIENTS_TABLE_NAME,
-				Key: {
-					client_id: { S: client_id }
-				},
-			});
-
 			try {
-				const clientData = await dynamoDBClient.send(getClientCommand);
+				const validateClientCommand = new InvokeCommand({
+					FunctionName: VALIDATECLIENTLAMBDA_FUNCTION_NAME,
+					Payload: JSON.stringify({
+						client_id,
+						redirect_uri
+					})
+				});
 
-				if (!clientData.Item) {
-					return {
-						statusCode: 400,
-						body: JSON.stringify({ error: 'Invalid client_id' })
-					};
-				}
+				const validateClientResult = await lambdaClient.send(validateClientCommand);
 
-				if (clientData.Item.client_secret?.S) {
-						
-					if(!clientData.Item.redirect_uris?.SS?.includes(redirect_uri) ) {
+				if(validateClientResult.FunctionError) {
+					const error = JSON.parse(new TextDecoder().decode(validateClientResult.Payload));
+
+					if(error.errorMessage === "not-found") {
 						return {
 							statusCode: 400,
-							body: JSON.stringify({ error: 'Invalid redirect_uri' })
+							body: JSON.stringify({ error: 'Invalid client_id' })
 						};
 					}
+					else if(error.errorMessage === "invalid-redirect-uri") {
+						return {
+							statusCode: 400,
+							body: JSON.stringify({ error: "Invalid redirect_uri" })
+						}
+					}
+				}
+				const data = JSON.parse(new TextDecoder().decode(validateClientResult.Payload));
+
+				if (data.secretClient) {
 				
 					if(scope != "profile") {
 						return {
@@ -62,16 +69,19 @@ export class SignupFunction implements LambdaInterface {
 						}
 					}
 
-					const getUserCommand = new GetItemCommand({
+					const getUserCommand = new QueryCommand({
 						TableName: USERS_TABLE_NAME,
-						Key: {
-							email: { S: email }
-						}
+						IndexName: "email-index",
+						KeyConditionExpression: "email = :email",
+						ExpressionAttributeValues: {
+							":email": { S: email }
+						},
+						Limit: 1
 					});
 
 					const existingUser = await dynamoDBClient.send(getUserCommand);
 
-					if (existingUser.Item) {
+					if (existingUser.Items?.length != 0) {
 						return {
 							statusCode: 409,
 							body: JSON.stringify({ error: 'User already exists' })

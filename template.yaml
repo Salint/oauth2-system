@@ -104,6 +104,7 @@ Resources:
           USERS_TABLE_NAME: !Ref Users
           CLIENTS_TABLE_NAME: !Ref Clients
           AUTHCODES_TABLE_NAME: !Ref AuthCodes
+          VALIDATECLIENTLAMBDA_FUNCTION_NAME: !Ref ValidateClientLambda
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref Users
@@ -111,6 +112,8 @@ Resources:
             TableName: !Ref Clients
         - DynamoDBCrudPolicy:
             TableName: !Ref AuthCodes
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ValidateClientLambda
 
       Events:
         OAuth2APIPOSToauth2signup:
@@ -141,6 +144,7 @@ Resources:
           USERS_TABLE_NAME: !Ref Users
           CLIENTS_TABLE_NAME: !Ref Clients
           AUTHCODES_TABLE_NAME: !Ref AuthCodes
+          VALIDATECLIENTLAMBDA_FUNCTION_NAME: !Ref ValidateClientLambda
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref Users
@@ -148,6 +152,8 @@ Resources:
             TableName: !Ref Clients
         - DynamoDBCrudPolicy:
             TableName: !Ref AuthCodes
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ValidateClientLambda
       Events:
         OAuth2APIPOSToauth2login:
           Type: Api
@@ -178,6 +184,7 @@ Resources:
           AUTHCODES_TABLE_NAME: !Ref AuthCodes
           REFRESHTOKENS_TABLE_NAME: !Ref RefreshTokens
           JWT_SECRET_NAME: !Ref JWTSECRET
+          VALIDATECLIENTLAMBDA_FUNCTION_NAME: !Ref ValidateClientLambda
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref Users
@@ -189,6 +196,8 @@ Resources:
             ParameterName: !Ref JWTSECRET
         - DynamoDBCrudPolicy:
             TableName: !Ref RefreshTokens
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ValidateClientLambda
       Events:
         OAuth2APIPOSToauth2token:
           Type: Api
@@ -232,6 +241,29 @@ Resources:
     DeletionPolicy: Delete
     Properties:
       LogGroupName: !Sub /aws/lambda/${ValidateLambda}
+      RetentionInDays: 1
+
+  ValidateClientLambda:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+    Properties:
+      Description: !Sub ${AWS::StackName}-${Environment}-ValidateClientLambda
+      CodeUri: .
+      Handler: src/validate-client/index.handler
+      MemorySize: 128
+      Environment:
+        Variables:
+          CLIENTS_TABLE_NAME: !Ref Clients
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref Clients
+
+  ValidateClientLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ValidateClientLambda}
       RetentionInDays: 1
 
   JWTSECRET:
